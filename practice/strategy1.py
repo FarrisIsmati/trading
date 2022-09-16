@@ -1,11 +1,12 @@
 import asyncio
 import os
-from typing import Any, List, TypeVar
+from typing import Any
 from dotenv import load_dotenv  # type: ignore
 from trade_types import TradePairSymbolsLiteral, TradePairSymbols
 from livefeed import Db, Binance
 import pandas as pd
 from pandas import DataFrame
+from BinanceTypes import BinanceOrder
 
 load_dotenv()
 
@@ -52,18 +53,18 @@ class Strategy1:
         cumret: Any, 
         entry: float,
         qty: float,
-        count: int = -1, 
+        log_counter: int = -1, 
         log_period: int = 200
     ):
         # Go in if value starts to move up
-        if count > -1 and count % log_period:
+        if log_counter > -1 and log_counter % log_period:
             print(
                 round((cumret[cumret.last_valid_index()] / entry) * 100, 2),  # type: ignore
                 f'% - {entry} % increase')
 
         if cumret[cumret.last_valid_index()] > entry:
             # Buy some with USDT
-            order = await self.__buy(TradePairSymbols.BTCUSDT.value, qty)
+            order:BinanceOrder = await self.__buy(TradePairSymbols.BTCUSDT.value, qty)
             print(order)
             return order
 
@@ -71,13 +72,13 @@ class Strategy1:
 
     async def __close_position(
         self,
-        order: Any,
+        order: BinanceOrder,
         df: DataFrame,
         qty: float,
         lookback_pd: Any,
         sell_high_pct: float,
         sell_low_pct: float,
-        count: int = -1, 
+        log_counter: int = -1, 
         log_period: int = 200
     ):
         # Only look at data in db where entries
@@ -90,9 +91,9 @@ class Strategy1:
             sincebuyret = ((sincebuy.Price.pct_change() + 1).cumprod()) - 1
             last_entry = sincebuyret[sincebuyret.last_valid_index()]
 
-            if count % log_period:
-                print(round((df.iloc[lookback_pd.last_valid_index()].Price / position_price) * 100, 2),
-                        '% - ', position_price, '->', df.iloc[lookback_pd.last_valid_index()].Price,
+            if log_counter > -1 and log_counter % log_period:
+                print(round((df.iloc[lookback_pd.last_valid_index()].Price / position_price) * 100, 2),  # type: ignore
+                        '% - ', position_price, '->', df.iloc[lookback_pd.last_valid_index()].Price,# type: ignore
                         f'Looking to sell with {sell_high_pct}% or -{sell_low_pct}%, -> {last_entry:.10f}')
 
             # If latest entry is greater than x percent or negative sell
@@ -125,7 +126,7 @@ class Strategy1:
         """
         open_position = False
         buy_order: Any = None
-        count = 0
+        log_counter = 0
         while True:
             df = pd.read_sql(self.symbol, self.engine)  # type: ignore
             # Look back a the last x number of data entries
@@ -140,7 +141,7 @@ class Strategy1:
             if not open_position:
                 buy_order = await self.__open_position(
                     cumret=cumret, 
-                    count=count,
+                    log_counter=log_counter,
                     entry=entry,
                     qty=qty
                 )
@@ -149,14 +150,14 @@ class Strategy1:
                 sell_order = await self.__close_position(
                     order=buy_order, 
                     df=df, 
-                    count=count,
+                    log_counter=log_counter,
                     qty=qty,
                     lookback_pd=lookback_pd,
                     sell_high_pct=sell_high_pct,
                     sell_low_pct=sell_low_pct
                 )
                 open_position = False if sell_order != None else True
-            count += 1
+            log_counter += 1
 
 
 async def main():
