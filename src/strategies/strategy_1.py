@@ -1,26 +1,60 @@
-import asyncio
-import os
+from datetime import datetime
 from typing import Any
-from dotenv import load_dotenv  # type: ignore
-from trade_types import TradePairSymbolsLiteral, TradePairSymbols
-from livefeed import Db, Binance
+from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols, PositionsLiteral, Positions
+from src.types.db_types import TradeOrder
+from src.live.binance_socket import BinanceSocket
 import pandas as pd
+from src.db.db import Db
 from pandas import DataFrame
-from BinanceTypes import BinanceOrder
-
-load_dotenv()
+from src.types.binance_types import BinanceOrder
 
 class Strategy1:
     def __init__(
         self, 
-        bnc: Binance, 
-        db: Db, 
+        bnc: BinanceSocket, 
+        db: Db,
         symbol: TradePairSymbolsLiteral, 
+        broker_fee: float = 0.1,
 ) -> None:
         self.bnc = bnc
         self.engine = db.engine
         self.symbol = symbol
-       
+        self.broker_fee = broker_fee
+        self.spacer = '      '
+        self.trades_db = Db('sqlite:///trades.db')
+
+    def __print_position_open(
+        self,
+        cumret: Any,
+        entry: float
+    ):
+        pct_to_buy: float = (cumret[cumret.last_valid_index()] / entry) * 100
+        pct_to_buy_rounded = round(pct_to_buy, 2)
+        print(f'{Positions.BUY.value}: {self.symbol} {self.spacer} ENTRY: +{entry}% {self.spacer} ENTRY+FEES: +{entry}% {self.spacer} ROC: {pct_to_buy_rounded}%')
+
+    def __print_position_close(
+        self,
+        last_entry: float,
+        sell_high_pct: float,
+        sell_low_pct: float,
+    ):
+        pct_change = round(last_entry, 4)
+        print(f'{Positions.SELL.value}: {self.symbol} {self.spacer} SELL UP: +{sell_high_pct}% {self.spacer} SELL DOWN: -{sell_low_pct}% {self.spacer} CHANGE: {pct_change}')
+
+    def __print_order(self, order: BinanceOrder):
+        print('')
+        print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
+        print('')
+
+    def __calc_slippage(self):
+            return 0
+
+    def __fees(
+        self,
+        entry: float
+    ):
+        return entry + self.broker_fee + self.__calc_slippage()
+
 
     async def __buy(
         self, 
@@ -28,12 +62,26 @@ class Strategy1:
         qty: float
     ):
         # Add logging logic
-        return await self.bnc.client.create_order(
+        order = await self.bnc.client.create_order(
             symbol=symbol,
             side='BUY',
             type='MARKET',
             quantity=qty
         )
+
+        trade: TradeOrder = {
+            'SessionId': '1', 
+            'Symbol': TradePairSymbols.BTCUSDT.value,
+            'Position': Positions.BUY.value, 
+            'TradingPrice': order['fills'][0]['price'], 
+            'Quantity': order['fills'][0]['qty'],
+            'Spent':float(order['fills'][0]['qty']) * float(order['fills'][0]['price']), 
+            'Earned': 0,
+            'Time': datetime.now()
+        }
+        self.trades_db.update_position_db(name='trades1', order=trade)
+
+        return order 
 
     async def __sell(
         self, 
@@ -41,12 +89,26 @@ class Strategy1:
         qty: float
     ):
         # Add logging logic
-        return await self.bnc.client.create_order(
+        order = await self.bnc.client.create_order(
             symbol=symbol,
             side='SELL',
             type='MARKET',
             quantity=qty
         )
+
+        trade: TradeOrder = {
+            'SessionId': '1', 
+            'Symbol': TradePairSymbols.BTCUSDT.value, 
+            'Position': Positions.SELL.value, 
+            'TradingPrice': order['fills'][0]['price'],
+            'Quantity': order['fills'][0]['qty'],
+            'Spent': 0,
+            'Earned': float(order['fills'][0]['qty']) * float(order['fills'][0]['price']),
+            'Time': datetime.now()
+        }
+        self.trades_db.update_position_db(name='trades1', order=trade)
+
+        return order
 
     async def __open_position(
         self, 
@@ -58,14 +120,15 @@ class Strategy1:
     ):
         # Go in if value starts to move up
         if log_counter > -1 and log_counter % log_period:
-            print(
-                round((cumret[cumret.last_valid_index()] / entry) * 100, 2),  # type: ignore
-                f'% - {entry} % increase')
+            self.__print_position_open(
+                cumret = cumret,
+                entry = entry
+            )
 
         if cumret[cumret.last_valid_index()] > entry:
             # Buy some with USDT
             order:BinanceOrder = await self.__buy(TradePairSymbols.BTCUSDT.value, qty)
-            print(order)
+            self.__print_order(order)
             return order
 
         return None
@@ -75,7 +138,6 @@ class Strategy1:
         order: BinanceOrder,
         df: DataFrame,
         qty: float,
-        lookback_pd: Any,
         sell_high_pct: float,
         sell_low_pct: float,
         log_counter: int = -1, 
@@ -89,17 +151,19 @@ class Strategy1:
         if len(sincebuy) > 1:
             # Get latest percent change since the last purchase
             sincebuyret = ((sincebuy.Price.pct_change() + 1).cumprod()) - 1
-            last_entry = sincebuyret[sincebuyret.last_valid_index()]
+            last_entry: float= sincebuyret[sincebuyret.last_valid_index()] #type: ignore
 
             if log_counter > -1 and log_counter % log_period:
-                print(round((df.iloc[lookback_pd.last_valid_index()].Price / position_price) * 100, 2),  # type: ignore
-                        '% - ', position_price, '->', df.iloc[lookback_pd.last_valid_index()].Price,# type: ignore
-                        f'Looking to sell with {sell_high_pct}% or -{sell_low_pct}%, -> {last_entry:.10f}')
+                self.__print_position_close(
+                    last_entry=last_entry,
+                    sell_high_pct=sell_high_pct,
+                    sell_low_pct=sell_low_pct
+                )
 
             # If latest entry is greater than x percent or negative sell
             if last_entry > sell_high_pct or last_entry < (-1 * sell_low_pct):
                 order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                print(order)
+                self.__print_order(order)
                 return order
 
     async def trade(
@@ -152,41 +216,16 @@ class Strategy1:
                     df=df, 
                     log_counter=log_counter,
                     qty=qty,
-                    lookback_pd=lookback_pd,
                     sell_high_pct=sell_high_pct,
                     sell_low_pct=sell_low_pct
                 )
                 open_position = False if sell_order != None else True
             log_counter += 1
 
-
-async def main():
-    BINANCE_API_KEY = os.environ['BINANCE_API_KEY_DEV']
-    BINANCE_SECRET_KEY = os.environ['BINANCE_SECRET_KEY_DEV']
-    is_testnet = True
-
-    bnc = Binance(BINANCE_API_KEY, BINANCE_SECRET_KEY, is_testnet)
-    await bnc.connect(TradePairSymbols.BTCUSDT.value)
-
-    db = Db('sqlite:///BTCUSDTstream.db')
-    strategy1 = Strategy1(bnc=bnc, db=db, symbol=TradePairSymbols.BTCUSDT.value)
-
-    await strategy1.trade(
-        lookback=50,
-        entry=0.0001,
-        qty=0.0009,
-        sell_high_pct=0.00015,
-        sell_low_pct=0.00015
-    )
-    await bnc.close()
-
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-
-
 # 1.
+# Tally up how much money I made or lost so far
+# Track comission of binance and slippage
+# Add to algorithim
 # Inputs to put in, if I invested X money at X price how much percentage increase I need to make +$1 per trade
 
 # By default also include binance fee .1 of each trade (buy & sell)
