@@ -1,6 +1,5 @@
 import asyncio
 import os
-from typing import Any
 from dotenv import load_dotenv  # type: ignore
 from src.types.trade_types import TradePairSymbols
 from src.live.binance_socket import BinanceSocket
@@ -17,8 +16,14 @@ async def main():
     bnc = BinanceSocket(BINANCE_API_KEY, BINANCE_SECRET_KEY, is_testnet)
     await bnc.connect(TradePairSymbols.BTCUSDT.value)
 
-    db = Db('sqlite:///BTCUSDTstream.db')
-    strategy1 = Strategy1(bnc=bnc, db=db, symbol=TradePairSymbols.BTCUSDT.value)
+    strategy1 = Strategy1(
+        bnc=bnc, 
+        feed_db_name='sqlite:///db/BTCUSDTstream.db',
+        feed_table_name='BTCUSDT',
+        trades_db_name='sqlite:///db/trades.db',
+        trades_table_name='trades1',
+        symbol=TradePairSymbols.BTCUSDT.value
+    )
 
     await strategy1.trade(
         lookback=50,

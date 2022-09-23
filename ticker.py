@@ -1,6 +1,5 @@
 import asyncio
 import os
-from typing import Any
 from dotenv import load_dotenv  # type: ignore
 from src.live.ticker import Ticker
 from src.types.trade_types import TradePairSymbols
@@ -18,7 +17,7 @@ async def main():
     bnc = BinanceSocket(BINANCE_API_KEY, BINANCE_SECRET_KEY, is_testnet)
     ts = await bnc.connect(TradePairSymbols.BTCUSDT.value)
 
-    ticker = Ticker(ts)
+    ticker = Ticker(ts, 'sqlite:///db/BTCUSDTstream.db', table_name='BTCUSDT')
     await ticker.update_ticker_db()
     
     await bnc.close()

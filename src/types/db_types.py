@@ -11,4 +11,5 @@ class TradeOrder(TypedDict):
     TradingPrice: float
     Spent: float
     Earned: float
+    Change: float
     Time: datetime

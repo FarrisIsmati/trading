@@ -27,23 +27,3 @@ class BinanceSocket:
 
     async def close(self) -> None:
         await self.client.close_connection()
-
-async def main():
-    BINANCE_API_KEY = os.environ['BINANCE_API_KEY_DEV']
-    BINANCE_SECRET_KEY = os.environ['BINANCE_SECRET_KEY_DEV']
-    is_testnet = True
-
-    bnc = BinanceSocket(BINANCE_API_KEY, BINANCE_SECRET_KEY, is_testnet)
-    db = Db('sqlite:///BTCUSDTstream.db')
-
-    ts = await bnc.connect(TradePairSymbols.BTCUSDT.value)
-
-    await db.update_ticker_db(ts, TradePairSymbols.BTCUSDT.value)
-
-    await bnc.close()
-
-
-if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(main())
-#

@@ -1,6 +1,7 @@
 from datetime import datetime
-from typing import Any
-from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols, PositionsLiteral, Positions
+from types import NoneType
+from typing import Any, Union
+from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols, Sell, SellLiteral, Positions
 from src.types.db_types import TradeOrder
 from src.live.binance_socket import BinanceSocket
 import pandas as pd
@@ -12,16 +13,22 @@ class Strategy1:
     def __init__(
         self, 
         bnc: BinanceSocket, 
-        db: Db,
+        feed_db_name: str,
+        feed_table_name: str,
+        trades_db_name: str,
+        trades_table_name: str,
         symbol: TradePairSymbolsLiteral, 
         broker_fee: float = 0.1,
 ) -> None:
         self.bnc = bnc
-        self.engine = db.engine
+        self.feed_db = Db(feed_db_name)
+        self.feed_table_name = feed_table_name
+        self.feed_db_engine = self.feed_db.engine
         self.symbol = symbol
         self.broker_fee = broker_fee
         self.spacer = '      '
-        self.trades_db = Db('sqlite:///trades.db')
+        self.trades_db = Db(trades_db_name)
+        self.trades_table_name = trades_table_name
 
     def __print_position_open(
         self,
@@ -41,10 +48,15 @@ class Strategy1:
         pct_change = round(last_entry, 4)
         print(f'{Positions.SELL.value}: {self.symbol} {self.spacer} SELL UP: +{sell_high_pct}% {self.spacer} SELL DOWN: -{sell_low_pct}% {self.spacer} CHANGE: {pct_change}')
 
-    def __print_order(self, order: BinanceOrder):
-        print('')
-        print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
-        print('')
+    def __print_order(self, order: BinanceOrder, sell_type: Union[SellLiteral, None]=None):
+        if (sell_type != None):
+            print('')
+            print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} TYPE: {sell_type} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
+            print('')
+        else:
+            print('')
+            print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
+            print('')
 
     def __calc_slippage(self):
             return 0
@@ -55,6 +67,21 @@ class Strategy1:
     ):
         return entry + self.broker_fee + self.__calc_slippage()
 
+    def __get_last_trade(self):
+        try:
+            df = pd.read_sql(self.trades_table_name, self.trades_db.engine)  # type: ignore
+            last_row = df.loc[df.last_valid_index()]
+            return float(last_row.Spent) if last_row.Spent != 0 else float(last_row.Earned)
+        except:
+            return float(0)
+
+    def __get_last_change(self):
+        try:
+            df = pd.read_sql(self.trades_table_name, self.trades_db.engine)  # type: ignore
+            last_row = df.loc[df.last_valid_index()]
+            return float(last_row.Change)
+        except:
+            return float(0)
 
     async def __buy(
         self, 
@@ -77,16 +104,17 @@ class Strategy1:
             'Quantity': order['fills'][0]['qty'],
             'Spent':float(order['fills'][0]['qty']) * float(order['fills'][0]['price']), 
             'Earned': 0,
+            'Change': self.__get_last_change() - (float(order['fills'][0]['qty']) * float(order['fills'][0]['price'])),
             'Time': datetime.now()
         }
-        self.trades_db.update_position_db(name='trades1', order=trade)
+        self.trades_db.update_position_db(name=self.trades_table_name, order=trade)
 
         return order 
 
     async def __sell(
         self, 
         symbol: TradePairSymbolsLiteral, 
-        qty: float
+        qty: float,
     ):
         # Add logging logic
         order = await self.bnc.client.create_order(
@@ -104,9 +132,10 @@ class Strategy1:
             'Quantity': order['fills'][0]['qty'],
             'Spent': 0,
             'Earned': float(order['fills'][0]['qty']) * float(order['fills'][0]['price']),
+            'Change': self.__get_last_change() + (float(order['fills'][0]['qty']) * float(order['fills'][0]['price'])),
             'Time': datetime.now()
         }
-        self.trades_db.update_position_db(name='trades1', order=trade)
+        self.trades_db.update_position_db(name=self.trades_table_name, order=trade)
 
         return order
 
@@ -160,10 +189,16 @@ class Strategy1:
                     sell_low_pct=sell_low_pct
                 )
 
-            # If latest entry is greater than x percent or negative sell
+            # If latest entry is greater than x percent
             if last_entry > sell_high_pct or last_entry < (-1 * sell_low_pct):
                 order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                self.__print_order(order)
+                self.__print_order(order, Sell.WIN.value)
+                return order
+
+            # If latest entry is less than x percent
+            if last_entry < (-1 * sell_low_pct):
+                order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
+                self.__print_order(order, Sell.LOSS.value)
                 return order
 
     async def trade(
@@ -173,7 +208,6 @@ class Strategy1:
             qty: float,
             sell_high_pct: float,
             sell_low_pct: float,
-            log_period: int = 200
     ):
         """
         Buy X quantity of crypto when price moves up X percentage within a 
@@ -192,7 +226,7 @@ class Strategy1:
         buy_order: Any = None
         log_counter = 0
         while True:
-            df = pd.read_sql(self.symbol, self.engine)  # type: ignore
+            df = pd.read_sql(self.feed_table_name, self.feed_db_engine)  # type: ignore
             # Look back a the last x number of data entries
 
             lookback_pd = df.iloc[-lookback:]
@@ -223,10 +257,9 @@ class Strategy1:
             log_counter += 1
 
 # 1.
-# Tally up how much money I made or lost so far
-# Track comission of binance and slippage
+# Tally up how much money I made or lost so far, Need clearer logging in terms of how much I bought/sold for and what I'm gaining/losing on each trade
+# Add comission fee of binance and slippage calculations
 # Add to algorithim
-# Inputs to put in, if I invested X money at X price how much percentage increase I need to make +$1 per trade
 
 # By default also include binance fee .1 of each trade (buy & sell)
 # Include option to include .075 with BNB trades
