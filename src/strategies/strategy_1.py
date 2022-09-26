@@ -3,7 +3,7 @@ from types import NoneType
 from typing import Any, Union
 from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols, Sell, SellLiteral, Positions
 from src.types.db_types import TradeOrder
-from src.live.binance_socket import BinanceSocket
+from src.live.binance import Binance
 import pandas as pd
 from src.db.db import Db
 from pandas import DataFrame
@@ -12,7 +12,7 @@ from src.types.binance_types import BinanceOrder
 class Strategy1:
     def __init__(
         self, 
-        bnc: BinanceSocket, 
+        bnc: Binance, 
         feed_db_name: str,
         feed_table_name: str,
         trades_db_name: str,
@@ -147,24 +147,26 @@ class Strategy1:
         log_counter: int = -1, 
         log_period: int = 200
     ):
-        # Go in if value starts to move up
-        if log_counter > -1 and log_counter % log_period:
-            self.__print_position_open(
-                cumret = cumret,
-                entry = entry
-            )
+        # # Go in if value starts to move up
+        # if log_counter > -1 and log_counter % log_period:
+        #     self.__print_position_open(
+        #         cumret = cumret,
+        #         entry = entry
+        #     )
 
         if cumret[cumret.last_valid_index()] > entry:
             # Buy some with USDT
             order:BinanceOrder = await self.__buy(TradePairSymbols.BTCUSDT.value, qty)
             self.__print_order(order)
+            balance = await self.bnc.get_balance()
+            print(balance)
             return order
 
         return None
 
     async def __close_position(
         self,
-        order: BinanceOrder,
+        buy_order: BinanceOrder,
         df: DataFrame,
         qty: float,
         sell_high_pct: float,
@@ -174,32 +176,36 @@ class Strategy1:
     ):
         # Only look at data in db where entries
         # are after the purchase we made
-        sincebuy = df.loc[df.Time > pd.to_datetime(order['transactTime'], unit='ms')]
-        position_price = float(order['fills'][0]['price'])
+        sincebuy = df.loc[df.Time > pd.to_datetime(buy_order['transactTime'], unit='ms')]
         # Wait till we have entries
         if len(sincebuy) > 1:
             # Get latest percent change since the last purchase
             sincebuyret = ((sincebuy.Price.pct_change() + 1).cumprod()) - 1
             last_entry: float= sincebuyret[sincebuyret.last_valid_index()] #type: ignore
 
-            if log_counter > -1 and log_counter % log_period:
-                self.__print_position_close(
-                    last_entry=last_entry,
-                    sell_high_pct=sell_high_pct,
-                    sell_low_pct=sell_low_pct
-                )
+            # if log_counter > -1 and log_counter % log_period:
+            #     self.__print_position_close(
+            #         last_entry=last_entry,
+            #         sell_high_pct=sell_high_pct,
+            #         sell_low_pct=sell_low_pct
+            #     )
 
             # If latest entry is greater than x percent
-            if last_entry > sell_high_pct or last_entry < (-1 * sell_low_pct):
-                order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                self.__print_order(order, Sell.WIN.value)
-                return order
+            if last_entry > sell_high_pct:
+                sell_order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
+                self.__print_order(sell_order, Sell.WIN.value)
+                balance = await self.bnc.get_balance()
+                print(balance)
+                return sell_order
 
             # If latest entry is less than x percent
             if last_entry < (-1 * sell_low_pct):
-                order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                self.__print_order(order, Sell.LOSS.value)
-                return order
+                sell_order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
+                print('Last Entry', last_entry)
+                self.__print_order(sell_order, Sell.LOSS.value)
+                balance = await self.bnc.get_balance()
+                print(balance)
+                return sell_order
 
     async def trade(
             self,
@@ -246,7 +252,7 @@ class Strategy1:
                 open_position = True if buy_order != None else False
             else:
                 sell_order = await self.__close_position(
-                    order=buy_order, 
+                    buy_order=buy_order, 
                     df=df, 
                     log_counter=log_counter,
                     qty=qty,
