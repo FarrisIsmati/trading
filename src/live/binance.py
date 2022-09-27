@@ -6,6 +6,7 @@ from src.db.db import Db
 from binance.streams import BinanceSocketManager
 from binance.client import AsyncClient
 from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols
+from src.types.binance_types import BinanceCurrency, BinanceCurrencyLiteral
 
 load_dotenv()
 
@@ -28,10 +29,10 @@ class Binance:
         trade_socket: Any = bm.trade_socket(symbol)
         return trade_socket
 
-    async def get_balance(self) -> str:
+    async def get_balance(self, currency: BinanceCurrencyLiteral) -> float:
         account = await self.client.get_account()
-        balance = account['balances'][6]
-        return balance
+        balance = account['balances'][currency]['free']
+        return float(balance)
 
     async def close(self) -> None:
         await self.client.close_connection()

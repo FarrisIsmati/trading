@@ -1,5 +1,4 @@
 from datetime import datetime
-from types import NoneType
 from typing import Any, Union
 from src.types.trade_types import TradePairSymbolsLiteral, TradePairSymbols, Sell, SellLiteral, Positions
 from src.types.db_types import TradeOrder
@@ -8,6 +7,7 @@ import pandas as pd
 from src.db.db import Db
 from pandas import DataFrame
 from src.types.binance_types import BinanceOrder
+from src.types.binance_types import BinanceCurrency, BinanceCurrencyLiteral
 
 class Strategy1:
     def __init__(
@@ -18,6 +18,7 @@ class Strategy1:
         trades_db_name: str,
         trades_table_name: str,
         symbol: TradePairSymbolsLiteral, 
+        show_ticker_logs = False,
         broker_fee: float = 0.1,
 ) -> None:
         self.bnc = bnc
@@ -26,9 +27,10 @@ class Strategy1:
         self.feed_db_engine = self.feed_db.engine
         self.symbol = symbol
         self.broker_fee = broker_fee
-        self.spacer = '      '
+        self.spacer = '  '
         self.trades_db = Db(trades_db_name)
         self.trades_table_name = trades_table_name
+        self.show_ticker_logs = show_ticker_logs
 
     def __print_position_open(
         self,
@@ -48,14 +50,18 @@ class Strategy1:
         pct_change = round(last_entry, 4)
         print(f'{Positions.SELL.value}: {self.symbol} {self.spacer} SELL UP: +{sell_high_pct}% {self.spacer} SELL DOWN: -{sell_low_pct}% {self.spacer} CHANGE: {pct_change}')
 
-    def __print_order(self, order: BinanceOrder, sell_type: Union[SellLiteral, None]=None):
+    async def __print_order(self, order: BinanceOrder, sell_type: Union[SellLiteral, None]=None):
+        balance = await self.bnc.get_balance(BinanceCurrency.UDST.value)
+        trans_price = float(order['fills'][0]['price'])
+        qty = float(order['fills'][0]['qty'])
+
         if (sell_type != None):
             print('')
-            print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} TYPE: {sell_type} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
+            print(f"TRANSACTION: {order['side']} {self.spacer} EARNED: ${round(trans_price * qty, 6)} {self.spacer} TRX PRICE: {trans_price} {self.spacer} QTY: {qty} {self.spacer} ORDER ID: {order['orderId']} {self.spacer} BALANCE USDT: ${round(balance, 6)} TYPE: {sell_type} {self.spacer}")
             print('')
         else:
             print('')
-            print(f"TRANSACTION: {order['side']} {self.spacer} PRICE: {order['fills'][0]['price']} {self.spacer} QTY: {order['fills'][0]['qty']} {self.spacer} ORDER ID: {order['orderId']}")
+            print(f"TRANSACTION: {order['side']} {self.spacer} PAID: ${round(trans_price * qty, 6)} {self.spacer} TRX PRICE: {trans_price} {self.spacer} QTY: {qty} {self.spacer} ORDER ID: {order['orderId']} {self.spacer} BALANCE USDT: ${round(balance, 6)}")
             print('')
 
     def __calc_slippage(self):
@@ -95,21 +101,23 @@ class Strategy1:
             type='MARKET',
             quantity=qty
         )
-
+#!!!!!NEXT ADD COMISSION FEES!!!!
+        order_filled_at_price = float(order['fills'][0]['price'])
         trade: TradeOrder = {
             'SessionId': '1', 
             'Symbol': TradePairSymbols.BTCUSDT.value,
             'Position': Positions.BUY.value, 
-            'TradingPrice': order['fills'][0]['price'], 
-            'Quantity': order['fills'][0]['qty'],
-            'Spent':float(order['fills'][0]['qty']) * float(order['fills'][0]['price']), 
+            'TradingPrice': order_filled_at_price, 
+            'Quantity': qty,
+            'Spent':qty * order_filled_at_price,
+            'Comission': 1,
             'Earned': 0,
-            'Change': self.__get_last_change() - (float(order['fills'][0]['qty']) * float(order['fills'][0]['price'])),
+            'Change': self.__get_last_change() - (qty * order_filled_at_price),
             'Time': datetime.now()
         }
         self.trades_db.update_position_db(name=self.trades_table_name, order=trade)
 
-        return order 
+        return order
 
     async def __sell(
         self, 
@@ -131,6 +139,7 @@ class Strategy1:
             'TradingPrice': order['fills'][0]['price'],
             'Quantity': order['fills'][0]['qty'],
             'Spent': 0,
+            'Comission': 1,
             'Earned': float(order['fills'][0]['qty']) * float(order['fills'][0]['price']),
             'Change': self.__get_last_change() + (float(order['fills'][0]['qty']) * float(order['fills'][0]['price'])),
             'Time': datetime.now()
@@ -147,19 +156,17 @@ class Strategy1:
         log_counter: int = -1, 
         log_period: int = 200
     ):
-        # # Go in if value starts to move up
-        # if log_counter > -1 and log_counter % log_period:
-        #     self.__print_position_open(
-        #         cumret = cumret,
-        #         entry = entry
-        #     )
+        # Go in if value starts to move up
+        if self.show_ticker_logs and log_counter > -1 and log_counter % log_period:
+            self.__print_position_open(
+                cumret = cumret,
+                entry = entry
+            )
 
         if cumret[cumret.last_valid_index()] > entry:
             # Buy some with USDT
             order:BinanceOrder = await self.__buy(TradePairSymbols.BTCUSDT.value, qty)
-            self.__print_order(order)
-            balance = await self.bnc.get_balance()
-            print(balance)
+            await self.__print_order(order)
             return order
 
         return None
@@ -183,28 +190,23 @@ class Strategy1:
             sincebuyret = ((sincebuy.Price.pct_change() + 1).cumprod()) - 1
             last_entry: float= sincebuyret[sincebuyret.last_valid_index()] #type: ignore
 
-            # if log_counter > -1 and log_counter % log_period:
-            #     self.__print_position_close(
-            #         last_entry=last_entry,
-            #         sell_high_pct=sell_high_pct,
-            #         sell_low_pct=sell_low_pct
-            #     )
+            if self.show_ticker_logs and log_counter > -1 and log_counter % log_period:
+                self.__print_position_close(
+                    last_entry=last_entry,
+                    sell_high_pct=sell_high_pct,
+                    sell_low_pct=sell_low_pct
+                )
 
             # If latest entry is greater than x percent
             if last_entry > sell_high_pct:
                 sell_order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                self.__print_order(sell_order, Sell.WIN.value)
-                balance = await self.bnc.get_balance()
-                print(balance)
+                await self.__print_order(sell_order, Sell.WIN.value)
                 return sell_order
 
             # If latest entry is less than x percent
             if last_entry < (-1 * sell_low_pct):
                 sell_order = await self.__sell(TradePairSymbols.BTCUSDT.value, qty)
-                print('Last Entry', last_entry)
-                self.__print_order(sell_order, Sell.LOSS.value)
-                balance = await self.bnc.get_balance()
-                print(balance)
+                await self.__print_order(sell_order, Sell.LOSS.value)
                 return sell_order
 
     async def trade(

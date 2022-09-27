@@ -21,6 +21,7 @@ class Db:
         df.Quantity = df.Quantity.astype(float)
         df.TradingPrice = df.TradingPrice.astype(float)
         df.Spent = df.Spent.astype(float)
+        df.Comission = df.Comission.astype(float)
         df.Earned = df.Earned.astype(float)
         df.Change = df.Change.astype(float)
         df.Time = pd.to_datetime(df.Time, unit='ms')

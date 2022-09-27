@@ -1,4 +1,5 @@
-from typing import TypedDict
+from enum import Enum
+from typing import Literal, TypedDict
 
 
 class BinanceFill(TypedDict):
@@ -23,3 +24,9 @@ class BinanceOrder(TypedDict):
     type: str # Enum 'MARKET'
     side: str # Enum 'BUY'
     fills: list[BinanceFill]
+
+class BinanceCurrency(Enum):
+    BTC = 1
+    UDST = 6
+
+BinanceCurrencyLiteral = Literal[1,6]
